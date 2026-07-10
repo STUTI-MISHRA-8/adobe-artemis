@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+venv/
+.venv/
+backend/data/*.db
+node_modules/
+.next/
+out/
+.DS_Store

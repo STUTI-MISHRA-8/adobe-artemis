@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: artemis-aep-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: FLUFFYJAWS_API_HOST
+        value: https://api.fluffyjaws.adobe.com
+      - key: FLUFFYJAWS_MODEL
+        value: gpt-5.1
+      - key: AEP_CLIENT_ID
+        sync: false
+      - key: AEP_CLIENT_SECRET
+        sync: false
+      - key: AEP_ORG_ID
+        sync: false
+      - key: AEP_SCOPES
+        value: openid,AdobeID,read_organizations,additional_info.projectedProductContext,session
+      - key: AEP_SANDBOX_NAME
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

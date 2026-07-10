@@ -1,0 +1,9 @@
+INFO:     Will watch for changes in these directories: ['C:\\ADOBE-ARTEMIS\\backend']
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+INFO:     Started reloader process [22196] using WatchFiles
+INFO:     Started server process [19544]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:56821 - "GET /api/jobs/d899c122-a47c-4315-949d-128597720103/wizard HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'app\config.py'. Reloading...
+ 
