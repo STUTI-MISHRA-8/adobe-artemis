@@ -70,7 +70,11 @@ Return a JSON array only. No markdown, no other text.
 If the section is pure boilerplate with no real requirements, return []."""
 
 
-async def _extract_once(section_title: str, section_text: str, sec_id: str, semaphore: asyncio.Semaphore) -> list:
+async def _extract_once(section_title: str, section_text: str, sec_id: str, semaphore: asyncio.Semaphore) -> tuple[list, str | None]:
+    """Returns (observations, error). error is None on success — including a
+    legitimate "this section has no real requirements" — and is set only
+    when the underlying LLM call itself failed, so callers can tell those
+    two cases apart instead of treating every failure as a quiet empty."""
     async with semaphore:
         try:
             data, _provider = await call_llm_json(
@@ -79,19 +83,19 @@ async def _extract_once(section_title: str, section_text: str, sec_id: str, sema
             )
         except Exception as e:
             print(f"Section {sec_id} observation extraction failed: {e}")
-            return []
-    return data if isinstance(data, list) else []
+            return [], str(e)
+    return (data if isinstance(data, list) else []), None
 
 
-async def extract_observations_from_section(section: dict, semaphore: asyncio.Semaphore) -> list:
+async def extract_observations_from_section(section: dict, semaphore: asyncio.Semaphore) -> tuple[list, str | None]:
     section_text = section.get("content", "")
     section_title = section.get("title", "Unknown Section")
     sec_id = section.get("sec_id", "S-000")
 
     if len(section_text.strip()) < 5:
-        return []
+        return [], None
 
-    observations = await _extract_once(section_title, section_text, sec_id, semaphore)
+    observations, error = await _extract_once(section_title, section_text, sec_id, semaphore)
 
     # LLM extraction has non-trivial variance run-to-run. A substantial section
     # (real prose or a table) coming back empty is more likely a fluke than a
@@ -99,29 +103,36 @@ async def extract_observations_from_section(section: dict, semaphore: asyncio.Se
     # this is what keeps the "never miss a requirement" guarantee honest.
     if not observations and len(section_text.strip()) > 200:
         print(f"Section {sec_id} returned 0 observations on a non-trivial section — retrying once")
-        observations = await _extract_once(section_title, section_text, sec_id, semaphore)
+        observations, error = await _extract_once(section_title, section_text, sec_id, semaphore)
 
     for obs in observations:
         obs["aep_relevance"] = sanitize_layer(obs.get("aep_relevance"))
-    return observations
+    return observations, error
 
 
 async def run_pass1(section_map: dict, max_concurrency: int = 6, on_progress=None) -> list:
     sections = section_map.get("sections", [])
     semaphore = asyncio.Semaphore(max_concurrency)
-    all_observations: list = []
     completed = 0
 
     async def worker(section):
         nonlocal completed
-        observations = await extract_observations_from_section(section, semaphore)
+        observations, error = await extract_observations_from_section(section, semaphore)
         completed += 1
         if on_progress:
             await on_progress(completed, len(sections), section, len(observations))
-        return section, observations
+        return section, observations, error
 
     results = await asyncio.gather(*(worker(s) for s in sections))
-    results_by_sec_id = {section["sec_id"]: obs for section, obs in results}
+
+    failures = [error for _, _, error in results if error is not None]
+    if sections and failures and len(failures) == len(sections):
+        raise RuntimeError(
+            f"Observation extraction failed for all {len(sections)} section(s) — "
+            f"the underlying LLM call never succeeded. Last error: {failures[-1]}"
+        )
+
+    results_by_sec_id = {section["sec_id"]: obs for section, obs, _error in results}
 
     for section in sections:
         observations = results_by_sec_id.get(section["sec_id"], [])
