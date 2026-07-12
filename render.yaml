@@ -10,6 +10,10 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-latest
       - key: FLUFFYJAWS_API_HOST
         value: https://api.fluffyjaws.adobe.com
       - key: FLUFFYJAWS_MODEL
