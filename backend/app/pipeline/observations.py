@@ -134,6 +134,7 @@ async def run_pass1(section_map: dict, max_concurrency: int = 6, on_progress=Non
 
     results_by_sec_id = {section["sec_id"]: obs for section, obs, _error in results}
 
+    all_observations: list = []
     for section in sections:
         observations = results_by_sec_id.get(section["sec_id"], [])
         for i, obs in enumerate(observations):
