@@ -8,6 +8,8 @@ services:
     envVars:
       - key: GROQ_API_KEY
         sync: false
+      - key: GROQ_API_KEYS
+        sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
       - key: GEMINI_API_KEY
