@@ -88,6 +88,13 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
                         break  # move to next key immediately, don't waste retries on a dead key
                     if attempt < retries - 1:
                         await asyncio.sleep((wait + 0.5) if wait else 5.0 * (attempt + 1))
+                except Exception as e:
+                    # Anything else (bad/invalid key, network hiccup, etc.) shouldn't kill the
+                    # whole rotation — one broken key must never block the others from working.
+                    last_error = e
+                    print(f"Groq key ...{key[-6:]} failed with {type(e).__name__}: {e} — rotating to next key")
+                    _dead_keys.add(key)
+                    break
 
         raise last_error or RuntimeError("All configured Groq keys are exhausted for today")
 
