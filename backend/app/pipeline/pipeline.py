@@ -55,6 +55,8 @@ async def run_pipeline(file_path: str, filename: str, job_id: str):
                 await emit("structuring", f"Batch {completed}/{total} structured — {count} requirement(s)", pct)
 
             requirements = await run_pass2(observations, on_progress=req_progress)
+            if not requirements:
+                raise ValueError("No requirements could be structured from this document's observations")
             coverage = run_coverage_audit(observations, requirements)
             await emit(
                 "structuring",

@@ -49,14 +49,18 @@ Each requirement must have:
 Return JSON array only. No markdown. No other text."""
 
 
-async def structure_batch(batch: list, semaphore: asyncio.Semaphore) -> list:
+async def structure_batch(batch: list, semaphore: asyncio.Semaphore) -> tuple[list, str | None]:
+    """Returns (requirements, error). error is None on success — including a
+    legitimate "the LLM found zero requirements in this batch" — and is set
+    only when the underlying call itself failed (quota exhaustion, timeout,
+    unparseable response), so the caller can tell those two cases apart."""
     async with semaphore:
         try:
             data, _provider = await call_llm_json(_build_prompt(batch), system=SYSTEM_PROMPT)
-            return data if isinstance(data, list) else []
+            return (data if isinstance(data, list) else []), None
         except Exception as e:
             print(f"Requirement batch structuring failed: {e}")
-            return []
+            return [], str(e)
 
 
 async def run_pass2(observations: list, max_concurrency: int = 6, on_progress=None) -> list:
@@ -69,15 +73,22 @@ async def run_pass2(observations: list, max_concurrency: int = 6, on_progress=No
 
     async def worker(batch):
         nonlocal completed
-        result = await structure_batch(batch, semaphore)
+        result, error = await structure_batch(batch, semaphore)
         completed += 1
         if on_progress:
             await on_progress(completed, len(batches), len(result))
-        return result
+        return result, error
 
     batch_results = await asyncio.gather(*(worker(b) for b in batches))
 
-    all_raw = [req for batch_result in batch_results for req in batch_result]
+    failures = [err for _, err in batch_results if err is not None]
+    if failures and len(failures) == len(batch_results):
+        raise RuntimeError(
+            f"Requirement structuring failed for all {len(batch_results)} batch(es) — "
+            f"the underlying LLM call never succeeded. Last error: {failures[-1]}"
+        )
+
+    all_raw = [req for batch_result, _ in batch_results for req in batch_result]
 
     validated = []
     next_id = 1
