@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-flash-latest"
+
     fluffyjaws_api_host: str = "https://api.fluffyjaws.adobe.com"
     fluffyjaws_model: str = "gpt-5.1"
 

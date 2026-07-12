@@ -11,6 +11,7 @@ import json
 import re
 
 from app.llm.fluffy_client import call_fluffy, stream_fluffy
+from app.llm.gemini_client import call_gemini, stream_gemini
 from app.llm.groq_client import call_groq, stream_groq
 
 
@@ -59,9 +60,17 @@ async def call_llm(prompt: str, system: str | None = None, retries: int = 2, fas
     try:
         text = await call_groq(prompt, system=system)
         return text, "groq"
-    except Exception as e:
-        fluffy_desc = f"{type(last_error).__name__}: {last_error}" if last_error else "none"
-        raise RuntimeError(f"Both FluffyJaws and Groq failed. Fluffy error: {fluffy_desc}. Groq error: {type(e).__name__}: {e}")
+    except Exception as groq_error:
+        try:
+            text = await call_gemini(prompt, system=system)
+            return text, "gemini"
+        except Exception as gemini_error:
+            fluffy_desc = f"{type(last_error).__name__}: {last_error}" if last_error else "none"
+            raise RuntimeError(
+                f"FluffyJaws, Groq, and Gemini all failed. "
+                f"Fluffy error: {fluffy_desc}. Groq error: {type(groq_error).__name__}: {groq_error}. "
+                f"Gemini error: {type(gemini_error).__name__}: {gemini_error}"
+            )
 
 
 async def call_llm_json(prompt: str, system: str | None = None, fast: bool = False):
@@ -82,5 +91,14 @@ async def stream_llm(prompt: str, system: str | None = None, fast: bool = False)
         if produced:
             return  # partial stream already shown to the user — don't restart from scratch on a different provider
 
-    async for chunk in stream_groq(prompt, system=system):
-        yield chunk, "groq"
+    try:
+        async for chunk in stream_groq(prompt, system=system):
+            produced = True
+            yield chunk, "groq"
+        return
+    except Exception:
+        if produced:
+            return
+
+    async for chunk in stream_gemini(prompt, system=system):
+        yield chunk, "gemini"
