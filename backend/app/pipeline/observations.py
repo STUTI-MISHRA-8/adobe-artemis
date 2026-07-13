@@ -14,7 +14,7 @@ from app.pipeline.sanitize import sanitize_layer
 # The real concurrency gate is inside each provider client (matched to how many
 # API keys/connections it has). This just needs to be at least that high so
 # the pipeline itself never becomes the bottleneck before the provider does.
-_DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
+_DEFAULT_CONCURRENCY = 3  # deliberately conservative -- higher concurrency was tripping a global rate ceiling regardless of key count
 _STAGGER_DELAY_S = 0.35
 
 SYSTEM_PROMPT = """You are a Principal Adobe Experience Platform (AEP) Solution Architect with 15 years of experience reading enterprise Business Requirements Documents and turning them into flawless implementation plans.

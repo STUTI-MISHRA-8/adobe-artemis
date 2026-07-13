@@ -15,7 +15,7 @@ from app.llm.router import call_llm_json
 from app.models import Requirement
 from app.pipeline.sanitize import sanitize_flags, sanitize_layer, sanitize_priority
 
-_DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
+_DEFAULT_CONCURRENCY = 3  # deliberately conservative -- higher concurrency was tripping a global rate ceiling regardless of key count
 _STAGGER_DELAY_S = 0.35
 
 SYSTEM_PROMPT = """You are a Principal Adobe Experience Platform Solution Architect.
