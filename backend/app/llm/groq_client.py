@@ -92,10 +92,12 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
         start = _claim_start_index(keys)
 
         last_error: Exception | None = None
+        per_key_summary: list[str] = []
         for offset in range(len(keys)):
             idx = (start + offset) % len(keys)
             key = keys[idx]
             if _is_dead(key):
+                per_key_summary.append(f"...{key[-6:]}: skipped (cooling down)")
                 continue
 
             for attempt in range(retries):
@@ -107,18 +109,23 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
                     if wait is not None and wait > _DAILY_EXHAUSTION_THRESHOLD_S:
                         print(f"Groq key ...{key[-6:]} exhausted — cooling down for {wait:.0f}s, rotating to next key")
                         _mark_dead(key, wait)
+                        per_key_summary.append(f"...{key[-6:]}: rate limited ({wait:.0f}s cooldown)")
                         break  # move to next key immediately, don't waste retries on a dead key
                     if attempt < retries - 1:
                         await asyncio.sleep((wait + 0.5) if wait else 5.0 * (attempt + 1))
+                    elif attempt == retries - 1:
+                        per_key_summary.append(f"...{key[-6:]}: rate limited (short burst, retries exhausted)")
                 except Exception as e:
                     # Anything else (bad/invalid key, network hiccup, etc.) shouldn't kill the
                     # whole rotation — one broken key must never block the others from working.
                     last_error = e
                     print(f"Groq key ...{key[-6:]} failed with {type(e).__name__}: {e} — rotating to next key")
                     _mark_dead(key, None)
+                    per_key_summary.append(f"...{key[-6:]}: {type(e).__name__}: {e}")
                     break
 
-        raise last_error or RuntimeError("All configured Groq keys are currently rate-limited or exhausted")
+        summary = "; ".join(per_key_summary) if per_key_summary else "no keys were available to try"
+        raise RuntimeError(f"All configured Groq keys failed — {summary}") from last_error
 
 
 async def stream_groq(prompt: str, system: str | None = None):
