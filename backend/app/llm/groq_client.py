@@ -16,6 +16,7 @@ idle behind one shared low concurrency limit.
 import asyncio
 import re
 import threading
+import time
 
 from groq import Groq, RateLimitError
 
@@ -23,9 +24,10 @@ from app.config import settings
 
 _RETRY_WAIT_RE = re.compile(r"try again in ([\d.]+)s")
 _DAILY_EXHAUSTION_THRESHOLD_S = 30.0  # a wait longer than this means "done for today", not a short burst
+_DEFAULT_COOLDOWN_S = 3600.0  # fallback cooldown when Groq doesn't report a wait time
 
 _clients: dict[str, Groq] = {}
-_dead_keys: set[str] = set()  # keys confirmed exhausted for the day — skipped until process restart
+_dead_until: dict[str, float] = {}  # key -> monotonic time after which it's worth retrying again
 _lock = threading.Lock()
 _current_index = 0
 _CONCURRENCY_LIMIT = asyncio.Semaphore(max(2, len(settings.groq_api_key_list)))
@@ -35,6 +37,15 @@ def _get_client(key: str) -> Groq:
     if key not in _clients:
         _clients[key] = Groq(api_key=key)
     return _clients[key]
+
+
+def _is_dead(key: str) -> bool:
+    expiry = _dead_until.get(key)
+    return expiry is not None and time.monotonic() < expiry
+
+
+def _mark_dead(key: str, cooldown_s: float | None) -> None:
+    _dead_until[key] = time.monotonic() + (cooldown_s if cooldown_s else _DEFAULT_COOLDOWN_S)
 
 
 def _live_keys() -> list[str]:
@@ -84,7 +95,7 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
         for offset in range(len(keys)):
             idx = (start + offset) % len(keys)
             key = keys[idx]
-            if key in _dead_keys:
+            if _is_dead(key):
                 continue
 
             for attempt in range(retries):
@@ -94,8 +105,8 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
                     last_error = e
                     wait = _wait_seconds(e)
                     if wait is not None and wait > _DAILY_EXHAUSTION_THRESHOLD_S:
-                        print(f"Groq key ...{key[-6:]} exhausted for the day — rotating to next key")
-                        _dead_keys.add(key)
+                        print(f"Groq key ...{key[-6:]} exhausted — cooling down for {wait:.0f}s, rotating to next key")
+                        _mark_dead(key, wait)
                         break  # move to next key immediately, don't waste retries on a dead key
                     if attempt < retries - 1:
                         await asyncio.sleep((wait + 0.5) if wait else 5.0 * (attempt + 1))
@@ -104,10 +115,10 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
                     # whole rotation — one broken key must never block the others from working.
                     last_error = e
                     print(f"Groq key ...{key[-6:]} failed with {type(e).__name__}: {e} — rotating to next key")
-                    _dead_keys.add(key)
+                    _mark_dead(key, None)
                     break
 
-        raise last_error or RuntimeError("All configured Groq keys are exhausted for today")
+        raise last_error or RuntimeError("All configured Groq keys are currently rate-limited or exhausted")
 
 
 async def stream_groq(prompt: str, system: str | None = None):
@@ -117,7 +128,7 @@ async def stream_groq(prompt: str, system: str | None = None):
     keys = _live_keys()
     start = _claim_start_index(keys)
     key = next((keys[(start + offset) % len(keys)] for offset in range(len(keys))
-                if keys[(start + offset) % len(keys)] not in _dead_keys), keys[start])
+                if not _is_dead(keys[(start + offset) % len(keys)])), keys[start])
 
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
