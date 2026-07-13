@@ -6,6 +6,11 @@ however many keys are configured — each on a separate Groq organization has
 its own independent daily quota. A key found exhausted for the day is
 skipped for all future calls (not just retried within one call), so the
 system doesn't waste time rediscovering the same dead key over and over.
+
+Concurrency scales with the number of configured keys: each concurrent call
+is assigned a different starting key round-robin, so N keys genuinely means
+N calls in flight at once against N separate quotas — not N keys sitting
+idle behind one shared low concurrency limit.
 """
 
 import asyncio
@@ -16,7 +21,6 @@ from groq import Groq, RateLimitError
 
 from app.config import settings
 
-_CONCURRENCY_LIMIT = asyncio.Semaphore(2)
 _RETRY_WAIT_RE = re.compile(r"try again in ([\d.]+)s")
 _DAILY_EXHAUSTION_THRESHOLD_S = 30.0  # a wait longer than this means "done for today", not a short burst
 
@@ -24,6 +28,7 @@ _clients: dict[str, Groq] = {}
 _dead_keys: set[str] = set()  # keys confirmed exhausted for the day — skipped until process restart
 _lock = threading.Lock()
 _current_index = 0
+_CONCURRENCY_LIMIT = asyncio.Semaphore(max(2, len(settings.groq_api_key_list)))
 
 
 def _get_client(key: str) -> Groq:
@@ -59,12 +64,21 @@ def _wait_seconds(e: RateLimitError) -> float | None:
     return float(match.group(1)) if match else None
 
 
-async def call_groq(prompt: str, system: str | None = None, retries: int = 3) -> str:
+def _claim_start_index(keys: list[str]) -> int:
+    """Atomically claims the next round-robin starting key. Called once per
+    invocation (not per retry) so concurrent calls spread across different
+    keys immediately, before any of them have made a network call."""
     global _current_index
+    with _lock:
+        start = _current_index % len(keys)
+        _current_index += 1
+    return start
+
+
+async def call_groq(prompt: str, system: str | None = None, retries: int = 3) -> str:
     async with _CONCURRENCY_LIMIT:
         keys = _live_keys()
-        with _lock:
-            start = _current_index % len(keys)
+        start = _claim_start_index(keys)
 
         last_error: Exception | None = None
         for offset in range(len(keys)):
@@ -75,10 +89,7 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
 
             for attempt in range(retries):
                 try:
-                    result = await asyncio.to_thread(_sync_call, prompt, system, key)
-                    with _lock:
-                        _current_index = idx  # stick with a working key for subsequent calls
-                    return result
+                    return await asyncio.to_thread(_sync_call, prompt, system, key)
                 except RateLimitError as e:
                     last_error = e
                     wait = _wait_seconds(e)
@@ -101,13 +112,12 @@ async def call_groq(prompt: str, system: str | None = None, retries: int = 3) ->
 
 async def stream_groq(prompt: str, system: str | None = None):
     """Yields text chunks from a real Groq streaming completion, bridged from its sync SDK via a thread.
-    Uses whichever key call_groq last found working — streaming failures fall through to the caller
+    Claims its own round-robin key like call_groq — streaming failures fall through to the caller
     (router.py), which moves on to the next provider rather than rotating keys mid-stream."""
     keys = _live_keys()
-    with _lock:
-        key = keys[_current_index % len(keys)]
-        if key in _dead_keys:
-            key = next((k for k in keys if k not in _dead_keys), key)
+    start = _claim_start_index(keys)
+    key = next((keys[(start + offset) % len(keys)] for offset in range(len(keys))
+                if keys[(start + offset) % len(keys)] not in _dead_keys), keys[start])
 
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
