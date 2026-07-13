@@ -15,6 +15,7 @@ from app.pipeline.sanitize import sanitize_layer
 # API keys/connections it has). This just needs to be at least that high so
 # the pipeline itself never becomes the bottleneck before the provider does.
 _DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
+_STAGGER_DELAY_S = 0.35
 
 SYSTEM_PROMPT = """You are a Principal Adobe Experience Platform (AEP) Solution Architect with 15 years of experience reading enterprise Business Requirements Documents and turning them into flawless implementation plans.
 
@@ -121,15 +122,20 @@ async def run_pass1(section_map: dict, max_concurrency: int = _DEFAULT_CONCURREN
     semaphore = asyncio.Semaphore(max_concurrency)
     completed = 0
 
-    async def worker(section):
+    async def worker(index: int, section: dict):
         nonlocal completed
+        # A small stagger so concurrent workers don't all fire in the exact
+        # same instant — several real providers rate-limit bursts of
+        # simultaneous connections from one source regardless of which API
+        # key each request uses, so this is cheap insurance against that.
+        await asyncio.sleep(index * _STAGGER_DELAY_S)
         observations, error = await extract_observations_from_section(section, semaphore)
         completed += 1
         if on_progress:
             await on_progress(completed, len(sections), section, len(observations))
         return section, observations, error
 
-    results = await asyncio.gather(*(worker(s) for s in sections))
+    results = await asyncio.gather(*(worker(i, s) for i, s in enumerate(sections)))
 
     failures = [error for _, _, error in results if error is not None]
     if sections and failures and len(failures) == len(sections):

@@ -16,6 +16,7 @@ from app.models import Requirement
 from app.pipeline.sanitize import sanitize_flags, sanitize_layer, sanitize_priority
 
 _DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
+_STAGGER_DELAY_S = 0.35
 
 SYSTEM_PROMPT = """You are a Principal Adobe Experience Platform Solution Architect.
 You turn raw observations into formal, actionable AEP implementation requirements.
@@ -74,15 +75,16 @@ async def run_pass2(observations: list, max_concurrency: int = _DEFAULT_CONCURRE
     semaphore = asyncio.Semaphore(max_concurrency)
     completed = 0
 
-    async def worker(batch):
+    async def worker(index: int, batch: list):
         nonlocal completed
+        await asyncio.sleep(index * _STAGGER_DELAY_S)
         result, error = await structure_batch(batch, semaphore)
         completed += 1
         if on_progress:
             await on_progress(completed, len(batches), len(result))
         return result, error
 
-    batch_results = await asyncio.gather(*(worker(b) for b in batches))
+    batch_results = await asyncio.gather(*(worker(i, b) for i, b in enumerate(batches)))
 
     failures = [err for _, err in batch_results if err is not None]
     if failures and len(failures) == len(batch_results):
