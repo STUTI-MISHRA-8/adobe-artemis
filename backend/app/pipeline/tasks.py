@@ -8,9 +8,12 @@ grouped into one of the four AEP build phases for the execution-plan board.
 import asyncio
 import json
 
+from app.config import settings
 from app.llm.router import call_llm_json
 from app.models import Task
 from app.pipeline.sanitize import sanitize_layer, sanitize_priority
+
+_DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
 
 SYSTEM_PROMPT = """You are a senior AEP implementation architect. Schema before Dataset, Dataset before Ingestion, Ingestion before Activation.
 You always respond with valid JSON only — no explanation, no markdown, no preamble."""
@@ -65,7 +68,7 @@ async def decompose_batch(batch: list, semaphore: asyncio.Semaphore) -> list:
             return []
 
 
-async def run_pass3(requirements: list, max_concurrency: int = 6, on_progress=None) -> dict:
+async def run_pass3(requirements: list, max_concurrency: int = _DEFAULT_CONCURRENCY, on_progress=None) -> dict:
     if not requirements:
         return {"phase_1_schema": [], "phase_2_dataset": [], "phase_3_ingestion": [], "phase_4_activation": [], "total_tasks": 0}
 

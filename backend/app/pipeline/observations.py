@@ -7,8 +7,14 @@ document order so obs_id numbering stays deterministic and stable.
 
 import asyncio
 
+from app.config import settings
 from app.llm.router import call_llm_json
 from app.pipeline.sanitize import sanitize_layer
+
+# The real concurrency gate is inside each provider client (matched to how many
+# API keys/connections it has). This just needs to be at least that high so
+# the pipeline itself never becomes the bottleneck before the provider does.
+_DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
 
 SYSTEM_PROMPT = """You are a Principal Adobe Experience Platform (AEP) Solution Architect with 15 years of experience reading enterprise Business Requirements Documents and turning them into flawless implementation plans.
 
@@ -110,7 +116,7 @@ async def extract_observations_from_section(section: dict, semaphore: asyncio.Se
     return observations, error
 
 
-async def run_pass1(section_map: dict, max_concurrency: int = 6, on_progress=None) -> list:
+async def run_pass1(section_map: dict, max_concurrency: int = _DEFAULT_CONCURRENCY, on_progress=None) -> list:
     sections = section_map.get("sections", [])
     semaphore = asyncio.Semaphore(max_concurrency)
     completed = 0

@@ -10,9 +10,12 @@ zero requirements are ever lost.
 import asyncio
 import json
 
+from app.config import settings
 from app.llm.router import call_llm_json
 from app.models import Requirement
 from app.pipeline.sanitize import sanitize_flags, sanitize_layer, sanitize_priority
+
+_DEFAULT_CONCURRENCY = max(6, len(settings.groq_api_key_list))
 
 SYSTEM_PROMPT = """You are a Principal Adobe Experience Platform Solution Architect.
 You turn raw observations into formal, actionable AEP implementation requirements.
@@ -63,7 +66,7 @@ async def structure_batch(batch: list, semaphore: asyncio.Semaphore) -> tuple[li
             return [], str(e)
 
 
-async def run_pass2(observations: list, max_concurrency: int = 6, on_progress=None) -> list:
+async def run_pass2(observations: list, max_concurrency: int = _DEFAULT_CONCURRENCY, on_progress=None) -> list:
     if not observations:
         return []
 
