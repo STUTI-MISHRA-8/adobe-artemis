@@ -86,43 +86,71 @@ def _claim_start_index(keys: list[str]) -> int:
     return start
 
 
-async def call_groq(prompt: str, system: str | None = None, retries: int = 3) -> str:
+async def _try_key_once(prompt: str, system: str | None, key: str) -> tuple[str | None, Exception | None, float | None]:
+    """Returns (result, error, retry_after_s). Never sleeps — a failed attempt
+    is reported back immediately so the caller can decide whether trying a
+    different key is more worthwhile than waiting on this one."""
+    try:
+        return await asyncio.to_thread(_sync_call, prompt, system, key), None, None
+    except RateLimitError as e:
+        return None, e, _wait_seconds(e)
+    except Exception as e:
+        return None, e, None
+
+
+async def call_groq(prompt: str, system: str | None = None, retries: int = 2) -> str:
     async with _CONCURRENCY_LIMIT:
         keys = _live_keys()
         start = _claim_start_index(keys)
+        order = [keys[(start + offset) % len(keys)] for offset in range(len(keys))]
 
         last_error: Exception | None = None
         per_key_summary: list[str] = []
-        for offset in range(len(keys)):
-            idx = (start + offset) % len(keys)
-            key = keys[idx]
+        short_burst_keys: list[str] = []  # keys worth a real retry-with-wait, tried again below
+
+        # Pass 1: try every live key once, immediately, in round-robin order.
+        # No sleeping here — with N keys available, trying a fresh one is
+        # almost always faster than waiting out a rate limit on this one.
+        for key in order:
             if _is_dead(key):
                 per_key_summary.append(f"...{key[-6:]}: skipped (cooling down)")
                 continue
 
-            for attempt in range(retries):
-                try:
-                    return await asyncio.to_thread(_sync_call, prompt, system, key)
-                except RateLimitError as e:
-                    last_error = e
-                    wait = _wait_seconds(e)
-                    if wait is not None and wait > _DAILY_EXHAUSTION_THRESHOLD_S:
-                        print(f"Groq key ...{key[-6:]} exhausted — cooling down for {wait:.0f}s, rotating to next key")
-                        _mark_dead(key, wait)
-                        per_key_summary.append(f"...{key[-6:]}: rate limited ({wait:.0f}s cooldown)")
-                        break  # move to next key immediately, don't waste retries on a dead key
-                    if attempt < retries - 1:
-                        await asyncio.sleep((wait + 0.5) if wait else 5.0 * (attempt + 1))
-                    elif attempt == retries - 1:
-                        per_key_summary.append(f"...{key[-6:]}: rate limited (short burst, retries exhausted)")
-                except Exception as e:
-                    # Anything else (bad/invalid key, network hiccup, etc.) shouldn't kill the
-                    # whole rotation — one broken key must never block the others from working.
-                    last_error = e
-                    print(f"Groq key ...{key[-6:]} failed with {type(e).__name__}: {e} — rotating to next key")
-                    _mark_dead(key, None)
-                    per_key_summary.append(f"...{key[-6:]}: {type(e).__name__}: {e}")
-                    break
+            result, error, wait = await _try_key_once(prompt, system, key)
+            if error is None:
+                return result
+            last_error = error
+            if isinstance(error, RateLimitError):
+                if wait is not None and wait > _DAILY_EXHAUSTION_THRESHOLD_S:
+                    print(f"Groq key ...{key[-6:]} exhausted — cooling down for {wait:.0f}s, rotating to next key")
+                    _mark_dead(key, wait)
+                    per_key_summary.append(f"...{key[-6:]}: rate limited ({wait:.0f}s cooldown)")
+                else:
+                    short_burst_keys.append(key)
+                    per_key_summary.append(f"...{key[-6:]}: short burst, will retry after other keys")
+            else:
+                print(f"Groq key ...{key[-6:]} failed with {type(error).__name__}: {error} — rotating to next key")
+                _mark_dead(key, None)
+                per_key_summary.append(f"...{key[-6:]}: {type(error).__name__}: {error}")
+
+        # Pass 2: only reached if every key failed in pass 1. Now it's worth
+        # actually waiting — retry just the short-burst keys, which are the
+        # only ones with real odds of succeeding soon.
+        for attempt in range(retries):
+            if not short_burst_keys:
+                break
+            await asyncio.sleep(3.0 * (attempt + 1))
+            still_bursting = []
+            for key in short_burst_keys:
+                result, error, wait = await _try_key_once(prompt, system, key)
+                if error is None:
+                    return result
+                last_error = error
+                if isinstance(error, RateLimitError) and (wait is None or wait <= _DAILY_EXHAUSTION_THRESHOLD_S):
+                    still_bursting.append(key)
+                else:
+                    _mark_dead(key, wait)
+            short_burst_keys = still_bursting
 
         summary = "; ".join(per_key_summary) if per_key_summary else "no keys were available to try"
         raise RuntimeError(f"All configured Groq keys failed — {summary}") from last_error
