@@ -26,8 +26,6 @@ APIs for status checks.
 **Frontend** — Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS
 v4, shadcn/Base UI, Framer Motion.
 
-**Deployment** — Render.com (`render.yaml`, Docker).
-
 ## Running locally
 
 ### Backend
